@@ -204,6 +204,8 @@ async def ask_for_url(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
+# ... (початок коду без змін)
+
 @dp.message(AddTrackState.waiting_for_url)
 async def receive_url(message: Message, state: FSMContext):
     uid = message.from_user.id
@@ -216,6 +218,7 @@ async def receive_url(message: Message, state: FSMContext):
         )
         return
 
+    # Спрощена перевірка для Spotify та YouTube
     if "spotify.com" not in url and "youtu" not in url:
         await message.answer(
             "⚠️ Підтримуються тільки посилання Spotify або YouTube",
@@ -235,12 +238,15 @@ async def receive_url(message: Message, state: FSMContext):
         reply_markup=main_menu(unlistened)
     )
 
+    # ВИПРАВЛЕНО: Визначаємо sender один раз перед циклом
+    sender = f"@{message.from_user.username}" if message.from_user.username else message.from_user.full_name
+
     for other_uid in db.get_all_users_except(uid):
         try:
             count = db.get_unlistened_count(other_uid)
             await bot.send_message(
                 other_uid,
-                    f"🎵 Новий трек від <b>{sender}</b>!\n"
+                f"🎵 Новий трек від <b>{sender}</b>!\n"
                 f"{platform} <a href='{url}'>Відкрити</a>\n\n"
                 f"Непрослуханих треків: <b>{count}</b>",
                 parse_mode="HTML",
@@ -248,6 +254,46 @@ async def receive_url(message: Message, state: FSMContext):
             )
         except Exception:
             pass
+
+# ... (код до listen_next без змін)
+
+@dp.callback_query(F.data == "listen_next")
+async def listen_next(callback: CallbackQuery, state: FSMContext):
+    uid   = callback.from_user.id
+    track = db.get_next_unlistened(uid)
+
+    if not track:
+        await callback.message.edit_text(
+            "🎉 Усі треки прослухано! Нових поки немає.\n\n"
+            "Зачекай або додай свій трек 🎵",
+            reply_markup=main_menu(0)
+        )
+        await callback.answer()
+        return
+
+    track_id   = track["id"]
+    url        = track["url"]
+    unlistened = db.get_unlistened_count(uid)
+    platform   = platform_label(url)
+
+    await state.update_data(current_track_id=track_id)
+
+    # Отримуємо ім'я автора
+    author_row = next((u for u in db.get_all_users() if u["id"] == track["added_by"]), None)
+    author_name = author_row["name"] if author_row else f"id{track['added_by']}"
+
+    # ВИПРАВЛЕНО: Залишено лише один виклик edit_text та answer
+    await callback.message.edit_text(
+        f"🎧 <b>Новий трек від {author_name}</b>\n\n"
+        f"{platform}\n"
+        f"🔗 <a href='{url}'>Натисни щоб відкрити трек</a>\n\n"
+        f"📋 Залишилось непрослуханих: <b>{max(0, unlistened - 1)}</b>\n\n"
+        "Послухай та постав реакцію 👇",
+        parse_mode="HTML",
+        reply_markup=reaction_keyboard(track_id),
+        disable_web_page_preview=False
+    )
+    await callback.answer()
 
 
 @dp.callback_query(F.data == "cancel")
