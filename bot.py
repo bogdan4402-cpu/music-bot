@@ -448,7 +448,7 @@ async def receive_review(message: Message, state: FSMContext):
     track_id = data["current_track_id"]
     reaction = data.get("reaction", "like")
 
-    # Зберігаємо в базу хоча б позначку, що відгук був
+    # Зберігаємо в базу (для історії)
     review_content = message.text if message.text else "[Голосове повідомлення]"
     db.save_review(track_id, uid, review_content)
     db.mark_listened(track_id, uid)
@@ -457,28 +457,56 @@ async def receive_review(message: Message, state: FSMContext):
     emoji = "❤️" if reaction == "like" else "💔"
     track = db.get_track_by_id(track_id)
 
-    # Відправка автору
     if track and track["added_by"] != uid:
         try:
             target_id = track["added_by"]
             sender = f"@{message.from_user.username}" if message.from_user.username else f"ID: {uid}"
-            caption = (
-                f"📝 Відгук від {sender}\n"
+            
+            # Цей заголовок тепер буде всюди (забезпечує картку Spotify)
+            review_header = (
+                f"📝 Новий відгук на твій трек від {sender}\n\n"
+                f"🔗 {track['url']}\n"
                 f"{emoji} {'Лайк' if reaction == 'like' else 'Дизлайк'}"
             )
 
             if message.voice:
-                # ВІДПРАВЛЯЄМО ГОЛОСОВЕ
-                await bot.send_voice(target_id, message.voice.file_id, caption=caption)
+                # 1. Відправляємо текст із посиланням (з'явиться картка)
+                await bot.send_message(target_id, review_header, disable_web_page_preview=False)
+                # 2. Відправляємо саме голосове окремо
+                await bot.send_voice(target_id, message.voice.file_id)
+            
             elif message.text:
-                # ВІДПРАВЛЯЄМО ТЕКСТ
-                await bot.send_message(target_id, f"{caption}\n\n💬 {message.text}")
+                # Відправляємо текст + посилання одним повідомленням
+                await bot.send_message(
+                    target_id, 
+                    f"{review_header}\n\n💬 <i>{message.text}</i>", 
+                    parse_mode="HTML",
+                    disable_web_page_preview=False
+                )
+            
             else:
-                # ЯКЩО СТІКЕР ЧИ ІНШЕ
-                await bot.send_message(target_id, caption + "\n(Надіслано медіа-файл)")
-        
+                # Для стікерів або іншого
+                await bot.send_message(target_id, review_header, disable_web_page_preview=False)
+                if message.sticker:
+                    await bot.send_sticker(target_id, message.sticker.file_id)
+
         except Exception as e:
             logging.error(f"Помилка пересилки: {e}")
+
+    # Логіка показу наступного треку
+    next_track = db.get_next_unlistened(uid)
+    if next_track:
+        next_id = next_track["id"]
+        url = next_track["url"]
+        await state.update_data(current_track_id=next_id)
+        await state.set_state(ReviewState.waiting)
+        await message.answer(
+            f"✅ Відгук збережено!\n\n🎧 <b>Наступний трек:</b>\n{url}",
+            parse_mode="HTML",
+            reply_markup=reaction_keyboard(next_id)
+        )
+    else:
+        await message.answer("✅ Відгук збережено!\n\n🎉 Усі треки прослухано!", reply_markup=main_menu(0))
 
     # Перехід до наступного треку
     next_track = db.get_next_unlistened(uid)
