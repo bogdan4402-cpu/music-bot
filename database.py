@@ -35,8 +35,6 @@ def init_db():
         """)
 
 
-# ── Tracks ───────────────────────────────────────────────────
-
 def add_track(url: str, added_by: int) -> int:
     with conn() as c:
         cur = c.execute(
@@ -51,7 +49,6 @@ def get_track_by_id(track_id: int):
 
 
 def get_next_unlistened(user_id: int):
-    """Oldest track added by someone else that user hasn't listened yet."""
     with conn() as c:
         return c.execute("""
             SELECT t.id, t.url, t.added_by FROM tracks t
@@ -80,8 +77,6 @@ def get_all_users_except(user_id: int) -> list:
         return [r["added_by"] for r in rows]
 
 
-# ── Listens ──────────────────────────────────────────────────
-
 def set_reaction(track_id: int, user_id: int, reaction: str):
     with conn() as c:
         c.execute("""
@@ -100,12 +95,24 @@ def save_review(track_id: int, user_id: int, review: str):
 
 def mark_listened(track_id: int, user_id: int):
     with conn() as c:
-        c.execute("""
-            INSERT OR IGNORE INTO listens (track_id, user_id) VALUES (?, ?)
-        """, (track_id, user_id))
+        c.execute(
+            "INSERT OR IGNORE INTO listens (track_id, user_id) VALUES (?, ?)",
+            (track_id, user_id)
+        )
 
 
-# ── Stats ────────────────────────────────────────────────────
+def get_reviews_for_my_tracks(user_id: int) -> list:
+    with conn() as c:
+        rows = c.execute("""
+            SELECT t.url, t.id as track_id,
+                   l.reaction, l.review, l.user_id as listener_id, l.listened_at
+            FROM listens l
+            JOIN tracks t ON t.id = l.track_id
+            WHERE t.added_by = ? AND l.user_id != ?
+            ORDER BY l.listened_at DESC
+        """, (user_id, user_id)).fetchall()
+        return [dict(r) for r in rows]
+
 
 def get_user_stats(user_id: int) -> dict:
     with conn() as c:
@@ -127,4 +134,13 @@ def get_user_stats(user_id: int) -> dict:
             JOIN tracks t ON t.id = l.track_id
             WHERE t.added_by = ? AND l.reaction = 'dislike'
         """, (user_id,)).fetchone()[0]
-        return {"total": total, "listened": listened, "likes": likes, "dislikes": dislikes}
+        my_listened = c.execute(
+            "SELECT COUNT(*) FROM listens WHERE user_id = ?", (user_id,)
+        ).fetchone()[0]
+        return {
+            "total": total,
+            "listened": listened,
+            "likes": likes,
+            "dislikes": dislikes,
+            "my_listened": my_listened,
+        }
