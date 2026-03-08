@@ -169,6 +169,27 @@ async def cmd_users(message: Message):
     await message.answer(text, parse_mode="HTML")
 
 
+@dp.message(Command("pairs"))
+async def cmd_pairs(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+
+    pairs = db.get_all_pairs()
+    users = {u["id"]: u["name"] for u in db.get_all_users()}
+
+    if not pairs:
+        await message.answer("📋 Пар немає.")
+        return
+
+    text = "🔗 <b>Активні пари:</b>\n\n"
+    for p in pairs:
+        name1 = users.get(p["u1"], f"id{p['u1']}")
+        name2 = users.get(p["u2"], f"id{p['u2']}")
+        text += f"• <b>{name1}</b> ↔ <b>{name2}</b>\n"
+
+    await message.answer(text, parse_mode="HTML")
+
+    
 # ── Додати трек ──────────────────────────────────────────────
 
 @dp.callback_query(F.data == "add_track")
