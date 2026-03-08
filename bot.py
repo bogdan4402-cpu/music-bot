@@ -443,32 +443,58 @@ async def skip_review(callback: CallbackQuery, state: FSMContext):
 
 @dp.message(ReviewState.waiting)
 async def receive_review(message: Message, state: FSMContext):
-    uid      = message.from_user.id
-    data     = await state.get_data()
+    uid = message.from_user.id
+    data = await state.get_data()
     track_id = data["current_track_id"]
     reaction = data.get("reaction", "like")
 
-    db.save_review(track_id, uid, message.text)
+    # Зберігаємо в базу хоча б позначку, що відгук був
+    review_content = message.text if message.text else "[Голосове повідомлення]"
+    db.save_review(track_id, uid, review_content)
     db.mark_listened(track_id, uid)
     await state.clear()
 
     emoji = "❤️" if reaction == "like" else "💔"
-
-    # Повідомити автора треку
     track = db.get_track_by_id(track_id)
+
+    # Відправка автору
     if track and track["added_by"] != uid:
         try:
-            sender = f"@{message.from_user.username}" if message.from_user.username else f"користувач {uid}"
-            await bot.send_message(
-                track["added_by"],
-                f"📝 Новий відгук на твій трек від {sender}\n\n"
-                f"🔗 {track['url']}\n"
-                f"{emoji} {'Лайк' if reaction == 'like' else 'Дизлайк'}\n\n"
-                f"💬 <i>{message.text}</i>",
-                parse_mode="HTML"
+            target_id = track["added_by"]
+            sender = f"@{message.from_user.username}" if message.from_user.username else f"ID: {uid}"
+            caption = (
+                f"📝 Відгук від {sender}\n"
+                f"{emoji} {'Лайк' if reaction == 'like' else 'Дизлайк'}"
             )
-        except Exception:
-            pass
+
+            if message.voice:
+                # ВІДПРАВЛЯЄМО ГОЛОСОВЕ
+                await bot.send_voice(target_id, message.voice.file_id, caption=caption)
+            elif message.text:
+                # ВІДПРАВЛЯЄМО ТЕКСТ
+                await bot.send_message(target_id, f"{caption}\n\n💬 {message.text}")
+            else:
+                # ЯКЩО СТІКЕР ЧИ ІНШЕ
+                await bot.send_message(target_id, caption + "\n(Надіслано медіа-файл)")
+        
+        except Exception as e:
+            logging.error(f"Помилка пересилки: {e}")
+
+    # Перехід до наступного треку
+    next_track = db.get_next_unlistened(uid)
+    if next_track:
+        next_id = next_track["id"]
+        url = next_track["url"]
+        await state.update_data(current_track_id=next_id)
+        await state.set_state(ReviewState.waiting)
+        await message.answer(
+            f"✅ Відгук надіслано!\n\n🎧 <b>Наступний трек:</b>\n{url}",
+            parse_mode="HTML",
+            reply_markup=reaction_keyboard(next_id)
+        )
+    else:
+        await message.answer("✅ Відгук надіслано!\n\n🎉 Це був останній трек.", reply_markup=main_menu(0))
+
 
     # Автоматично показуємо наступний трек
     next_track = db.get_next_unlistened(uid)
