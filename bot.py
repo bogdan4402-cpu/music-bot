@@ -219,7 +219,7 @@ async def receive_url(message: Message, state: FSMContext):
             count = db.get_unlistened_count(other_uid)
             await bot.send_message(
                 other_uid,
-                f"🎵 З'явився новий трек!\n"
+                    f"🎵 Новий трек від <b>{sender}</b>!\n"
                 f"{platform} <a href='{url}'>Відкрити</a>\n\n"
                 f"Непрослуханих треків: <b>{count}</b>",
                 parse_mode="HTML",
@@ -264,6 +264,21 @@ async def listen_next(callback: CallbackQuery, state: FSMContext):
     platform   = platform_label(url)
 
     await state.update_data(current_track_id=track_id)
+
+    author_row = next((u for u in db.get_all_users() if u["id"] == track["added_by"]), None)
+    author_name = author_row["name"] if author_row else f"id{track['added_by']}"
+
+    await callback.message.edit_text(
+        f"🎧 <b>Новий трек від {author_name}</b>\n\n"
+        f"{platform}\n"
+        f"🔗 <a href='{url}'>Натисни щоб відкрити трек</a>\n\n"
+        f"📋 Залишилось непрослуханих: <b>{max(0, unlistened - 1)}</b>\n\n"
+        "Послухай та постав реакцію 👇",
+        parse_mode="HTML",
+        reply_markup=reaction_keyboard(track_id),
+        disable_web_page_preview=False
+    )
+    await callback.answer()
 
     await callback.message.edit_text(
         f"🎧 <b>Новий трек для тебе</b>\n\n"
