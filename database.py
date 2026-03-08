@@ -99,6 +99,17 @@ def get_visible_users(user_id: int) -> list:
             "SELECT user_b FROM pairs WHERE user_a = ?", (user_id,)
         ).fetchall()
         return [r["user_b"] for r in rows]
+    
+
+def get_all_pairs() -> list:
+    with conn() as c:
+        rows = c.execute("""
+            SELECT DISTINCT 
+                CASE WHEN user_a < user_b THEN user_a ELSE user_b END as u1,
+                CASE WHEN user_a < user_b THEN user_b ELSE user_a END as u2
+            FROM pairs
+        """).fetchall()
+        return [dict(r) for r in rows]
 
 
 # ── Tracks ───────────────────────────────────────────────────
