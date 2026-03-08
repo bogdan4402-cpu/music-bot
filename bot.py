@@ -9,7 +9,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
 import database as db
-from config import BOT_TOKEN
+from config import BOT_TOKEN, ADMIN_ID
 from keyboards import (
     main_menu,
     cancel_keyboard,
@@ -38,9 +38,24 @@ def platform_label(url: str) -> str:
     return "🔴 YouTube"
 
 
+def is_admin(uid: int) -> bool:
+    return uid == ADMIN_ID
+
+
+# ── /start ───────────────────────────────────────────────────
+
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     uid = message.from_user.id
+
+    if not db.is_allowed(uid) and not is_admin(uid):
+        await message.answer("⛔️ У тебе немає доступу до цього бота.")
+        return
+
+    # Автоматично додаємо адміна якщо його ще немає
+    if is_admin(uid) and not db.is_allowed(uid):
+        db.add_user(uid, message.from_user.full_name)
+
     unlistened = db.get_unlistened_count(uid)
     await message.answer(
         "👋 Привіт!\n\n"
@@ -50,6 +65,8 @@ async def cmd_start(message: Message):
         reply_markup=main_menu(unlistened)
     )
 
+
+# ── Головне меню ─────────────────────────────────────────────
 
 @dp.callback_query(F.data == "main_menu")
 async def go_main_menu(callback: CallbackQuery, state: FSMContext):
@@ -63,6 +80,96 @@ async def go_main_menu(callback: CallbackQuery, state: FSMContext):
     )
     await callback.answer()
 
+
+# ── Адмін команди ────────────────────────────────────────────
+
+@dp.message(Command("adduser"))
+async def cmd_adduser(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+
+    parts = message.text.split()
+    if len(parts) < 3:
+        await message.answer(
+            "❌ Використання: /adduser ID Ім'я\n"
+            "Приклад: /adduser 123456789 Богдан"
+        )
+        return
+
+    user_id = int(parts[1])
+    name    = " ".join(parts[2:])
+    db.add_user(user_id, name)
+    await message.answer(f"✅ Користувач <b>{name}</b> ({user_id}) додан.", parse_mode="HTML")
+
+
+@dp.message(Command("removeuser"))
+async def cmd_removeuser(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+
+    parts = message.text.split()
+    if len(parts) < 2:
+        await message.answer("❌ Використання: /removeuser ID")
+        return
+
+    user_id = int(parts[1])
+    db.remove_user(user_id)
+    await message.answer(f"✅ Користувач {user_id} видалений.")
+
+
+@dp.message(Command("addpair"))
+async def cmd_addpair(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+
+    parts = message.text.split()
+    if len(parts) < 3:
+        await message.answer(
+            "❌ Використання: /addpair ID_A ID_B\n"
+            "Приклад: /addpair 123456789 987654321\n"
+            "Після цього A бачить треки B і навпаки."
+        )
+        return
+
+    user_a = int(parts[1])
+    user_b = int(parts[2])
+    db.add_pair(user_a, user_b)
+    await message.answer(f"✅ Пара {user_a} ↔ {user_b} створена.")
+
+
+@dp.message(Command("removepair"))
+async def cmd_removepair(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+
+    parts = message.text.split()
+    if len(parts) < 3:
+        await message.answer("❌ Використання: /removepair ID_A ID_B")
+        return
+
+    user_a = int(parts[1])
+    user_b = int(parts[2])
+    db.remove_pair(user_a, user_b)
+    await message.answer(f"✅ Пара {user_a} ↔ {user_b} видалена.")
+
+
+@dp.message(Command("users"))
+async def cmd_users(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+
+    users = db.get_all_users()
+    if not users:
+        await message.answer("📋 Користувачів немає.")
+        return
+
+    text = "📋 <b>Користувачі:</b>\n\n"
+    for u in users:
+        text += f"• <b>{u['name']}</b> — <code>{u['id']}</code>\n"
+    await message.answer(text, parse_mode="HTML")
+
+
+# ── Додати трек ──────────────────────────────────────────────
 
 @dp.callback_query(F.data == "add_track")
 async def ask_for_url(callback: CallbackQuery, state: FSMContext):
@@ -98,7 +205,7 @@ async def receive_url(message: Message, state: FSMContext):
     db.add_track(url, added_by=uid)
     await state.clear()
 
-    platform = platform_label(url)
+    platform   = platform_label(url)
     unlistened = db.get_unlistened_count(uid)
 
     await message.answer(
@@ -125,7 +232,7 @@ async def receive_url(message: Message, state: FSMContext):
 @dp.callback_query(F.data == "cancel")
 async def cancel_action(callback: CallbackQuery, state: FSMContext):
     await state.clear()
-    uid = callback.from_user.id
+    uid        = callback.from_user.id
     unlistened = db.get_unlistened_count(uid)
     await callback.message.edit_text(
         f"❌ Скасовано.\n\nНепрослуханих треків: <b>{unlistened}</b>",
@@ -134,6 +241,8 @@ async def cancel_action(callback: CallbackQuery, state: FSMContext):
     )
     await callback.answer()
 
+
+# ── Слухати трек ─────────────────────────────────────────────
 
 @dp.callback_query(F.data == "listen_next")
 async def listen_next(callback: CallbackQuery, state: FSMContext):
@@ -169,6 +278,8 @@ async def listen_next(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
+# ── Пропустити трек ──────────────────────────────────────────
+
 @dp.callback_query(F.data.startswith("skip_track_"))
 async def skip_track(callback: CallbackQuery, state: FSMContext):
     uid      = callback.from_user.id
@@ -184,6 +295,8 @@ async def skip_track(callback: CallbackQuery, state: FSMContext):
     )
     await callback.answer()
 
+
+# ── Реакція ──────────────────────────────────────────────────
 
 @dp.callback_query(F.data.startswith("like_") | F.data.startswith("dislike_"))
 async def handle_reaction(callback: CallbackQuery, state: FSMContext):
@@ -207,6 +320,8 @@ async def handle_reaction(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
+# ── Пропустити відгук ────────────────────────────────────────
+
 @dp.callback_query(F.data == "skip_review", ReviewState.waiting)
 async def skip_review(callback: CallbackQuery, state: FSMContext):
     uid      = callback.from_user.id
@@ -216,13 +331,33 @@ async def skip_review(callback: CallbackQuery, state: FSMContext):
     db.mark_listened(track_id, uid)
     await state.clear()
 
-    unlistened = db.get_unlistened_count(uid)
-    await callback.message.edit_text(
-        "⏭ Відгук пропущено.",
-        reply_markup=main_menu(unlistened)
-    )
+    # Автоматично показуємо наступний трек
+    track = db.get_next_unlistened(uid)
+    if track:
+        next_id    = track["id"]
+        url        = track["url"]
+        unlistened = db.get_unlistened_count(uid)
+        platform   = platform_label(url)
+        await state.update_data(current_track_id=next_id)
+        await callback.message.edit_text(
+            f"🎧 <b>Наступний трек</b>\n\n"
+            f"{platform}\n"
+            f"🔗 <a href='{url}'>Натисни щоб відкрити трек</a>\n\n"
+            f"📋 Залишилось непрослуханих: <b>{max(0, unlistened - 1)}</b>\n\n"
+            "Послухай та постав реакцію 👇",
+            parse_mode="HTML",
+            reply_markup=reaction_keyboard(next_id),
+            disable_web_page_preview=False
+        )
+    else:
+        await callback.message.edit_text(
+            "🎉 Усі треки прослухано!",
+            reply_markup=main_menu(0)
+        )
     await callback.answer()
 
+
+# ── Текст відгуку ────────────────────────────────────────────
 
 @dp.message(ReviewState.waiting)
 async def receive_review(message: Message, state: FSMContext):
@@ -235,14 +370,9 @@ async def receive_review(message: Message, state: FSMContext):
     db.mark_listened(track_id, uid)
     await state.clear()
 
-    emoji      = "❤️" if reaction == "like" else "💔"
-    unlistened = db.get_unlistened_count(uid)
+    emoji = "❤️" if reaction == "like" else "💔"
 
-    await message.answer(
-        f"✅ Відгук збережено {emoji}",
-        reply_markup=main_menu(unlistened)
-    )
-
+    # Повідомити автора треку
     track = db.get_track_by_id(track_id)
     if track and track["added_by"] != uid:
         try:
@@ -258,6 +388,34 @@ async def receive_review(message: Message, state: FSMContext):
         except Exception:
             pass
 
+    # Автоматично показуємо наступний трек
+    next_track = db.get_next_unlistened(uid)
+    if next_track:
+        next_id    = next_track["id"]
+        url        = next_track["url"]
+        unlistened = db.get_unlistened_count(uid)
+        platform   = platform_label(url)
+        await state.update_data(current_track_id=next_id)
+        await state.set_state(ReviewState.waiting)
+        await message.answer(
+            f"✅ Відгук збережено {emoji}\n\n"
+            f"🎧 <b>Наступний трек</b>\n\n"
+            f"{platform}\n"
+            f"🔗 <a href='{url}'>Натисни щоб відкрити трек</a>\n\n"
+            f"📋 Залишилось непрослуханих: <b>{max(0, unlistened - 1)}</b>\n\n"
+            "Послухай та постав реакцію 👇",
+            parse_mode="HTML",
+            reply_markup=reaction_keyboard(next_id),
+            disable_web_page_preview=False
+        )
+    else:
+        await message.answer(
+            f"✅ Відгук збережено {emoji}\n\n🎉 Усі треки прослухано!",
+            reply_markup=main_menu(0)
+        )
+
+
+# ── Перегляд відгуків ────────────────────────────────────────
 
 @dp.callback_query(F.data == "view_reviews")
 async def view_reviews(callback: CallbackQuery):
@@ -294,9 +452,9 @@ async def show_review(message, reviews: list, index: int, edit: bool = False):
     reaction = r["reaction"]
     review   = r["review"]
 
-    emoji = "❤️ Лайк" if reaction == "like" else ("💔 Дизлайк" if reaction == "dislike" else "— без реакції")
+    emoji       = "❤️ Лайк" if reaction == "like" else ("💔 Дизлайк" if reaction == "dislike" else "— без реакції")
     review_text = f"💬 <i>{review}</i>" if review else "💬 <i>Без відгуку</i>"
-    short_url = url[:50] + "..." if len(url) > 50 else url
+    short_url   = url[:50] + "..." if len(url) > 50 else url
 
     text = (
         f"📋 <b>Відгук {index + 1} з {total}</b>\n\n"
@@ -312,6 +470,8 @@ async def show_review(message, reviews: list, index: int, edit: bool = False):
     else:
         await message.answer(text, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=True)
 
+
+# ── Статистика ───────────────────────────────────────────────
 
 @dp.callback_query(F.data == "my_stats")
 async def my_stats(callback: CallbackQuery):
@@ -332,6 +492,8 @@ async def my_stats(callback: CallbackQuery):
     await callback.answer()
 
 
+# ── Запуск ───────────────────────────────────────────────────
+
 async def main():
     db.init_db()
     await dp.start_polling(bot)
@@ -339,3 +501,12 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+```
+
+---
+
+Заміни `config.py`, `database.py` і `bot.py` на GitHub. Після деплою використовуй такі команди:
+```
+/adduser 123456789 Богдан      — додати друга
+/addpair 1106966008 123456789  — ти бачиш його треки і він твої
+/users                         — список всіх користувачів
