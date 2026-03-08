@@ -17,6 +17,15 @@ def conn():
 def init_db():
     with conn() as c:
         c.executescript("""
+            CREATE TABLE IF NOT EXISTS users (
+                id         INTEGER PRIMARY KEY,
+                name       TEXT
+            );
+            CREATE TABLE IF NOT EXISTS pairs (
+                user_a     INTEGER NOT NULL,
+                user_b     INTEGER NOT NULL,
+                PRIMARY KEY (user_a, user_b)
+            );
             CREATE TABLE IF NOT EXISTS tracks (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
                 url        TEXT NOT NULL,
@@ -35,6 +44,65 @@ def init_db():
         """)
 
 
+# ── Users ────────────────────────────────────────────────────
+
+def add_user(user_id: int, name: str):
+    with conn() as c:
+        c.execute(
+            "INSERT OR REPLACE INTO users (id, name) VALUES (?, ?)",
+            (user_id, name)
+        )
+
+
+def remove_user(user_id: int):
+    with conn() as c:
+        c.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        c.execute("DELETE FROM pairs WHERE user_a = ? OR user_b = ?", (user_id, user_id))
+
+
+def is_allowed(user_id: int) -> bool:
+    with conn() as c:
+        row = c.execute("SELECT id FROM users WHERE id = ?", (user_id,)).fetchone()
+        return row is not None
+
+
+def get_all_users() -> list:
+    with conn() as c:
+        return [dict(r) for r in c.execute("SELECT * FROM users").fetchall()]
+
+
+# ── Pairs ────────────────────────────────────────────────────
+
+def add_pair(user_a: int, user_b: int):
+    """A бачить треки B і навпаки."""
+    with conn() as c:
+        c.execute(
+            "INSERT OR IGNORE INTO pairs (user_a, user_b) VALUES (?, ?)", (user_a, user_b)
+        )
+        c.execute(
+            "INSERT OR IGNORE INTO pairs (user_a, user_b) VALUES (?, ?)", (user_b, user_a)
+        )
+
+
+def remove_pair(user_a: int, user_b: int):
+    with conn() as c:
+        c.execute(
+            "DELETE FROM pairs WHERE (user_a=? AND user_b=?) OR (user_a=? AND user_b=?)",
+            (user_a, user_b, user_b, user_a)
+        )
+
+
+def get_visible_users(user_id: int) -> list:
+    """Список ID юзерів чиї треки може бачити user_id."""
+    with conn() as c:
+        rows = c.execute(
+            "SELECT user_b FROM pairs WHERE user_a = ?", (user_id,)
+        ).fetchall()
+        return [r["user_b"] for r in rows]
+
+
+# ── Tracks ───────────────────────────────────────────────────
+
 def add_track(url: str, added_by: int) -> int:
     with conn() as c:
         cur = c.execute(
@@ -49,33 +117,40 @@ def get_track_by_id(track_id: int):
 
 
 def get_next_unlistened(user_id: int):
+    visible = get_visible_users(user_id)
+    if not visible:
+        return None
+    placeholders = ",".join("?" * len(visible))
     with conn() as c:
-        return c.execute("""
+        return c.execute(f"""
             SELECT t.id, t.url, t.added_by FROM tracks t
-            WHERE t.added_by != ?
+            WHERE t.added_by IN ({placeholders})
               AND t.id NOT IN (SELECT track_id FROM listens WHERE user_id = ?)
             ORDER BY t.added_at ASC
             LIMIT 1
-        """, (user_id, user_id)).fetchone()
+        """, (*visible, user_id)).fetchone()
 
 
 def get_unlistened_count(user_id: int) -> int:
+    visible = get_visible_users(user_id)
+    if not visible:
+        return 0
+    placeholders = ",".join("?" * len(visible))
     with conn() as c:
-        row = c.execute("""
+        row = c.execute(f"""
             SELECT COUNT(*) AS cnt FROM tracks
-            WHERE added_by != ?
+            WHERE added_by IN ({placeholders})
               AND id NOT IN (SELECT track_id FROM listens WHERE user_id = ?)
-        """, (user_id, user_id)).fetchone()
+        """, (*visible, user_id)).fetchone()
         return row["cnt"]
 
 
 def get_all_users_except(user_id: int) -> list:
-    with conn() as c:
-        rows = c.execute(
-            "SELECT DISTINCT added_by FROM tracks WHERE added_by != ?", (user_id,)
-        ).fetchall()
-        return [r["added_by"] for r in rows]
+    visible = get_visible_users(user_id)
+    return visible
 
+
+# ── Listens ──────────────────────────────────────────────────
 
 def set_reaction(track_id: int, user_id: int, reaction: str):
     with conn() as c:
@@ -101,6 +176,8 @@ def mark_listened(track_id: int, user_id: int):
         )
 
 
+# ── Reviews ──────────────────────────────────────────────────
+
 def get_reviews_for_my_tracks(user_id: int) -> list:
     with conn() as c:
         rows = c.execute("""
@@ -113,6 +190,8 @@ def get_reviews_for_my_tracks(user_id: int) -> list:
         """, (user_id, user_id)).fetchall()
         return [dict(r) for r in rows]
 
+
+# ── Stats ────────────────────────────────────────────────────
 
 def get_user_stats(user_id: int) -> dict:
     with conn() as c:
